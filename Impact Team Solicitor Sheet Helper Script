@@ -1,0 +1,213 @@
+const HEADER_ROW = 4;
+const TIME_WINDOW_MINUTES = 15;
+
+/* =======================
+   NEXT MOVE CONFIG
+======================= */
+
+const LAST_DONOR_ACTION_MAP = {
+    "Gave recently (new)": "Introduce yourself, thank (Phone, email, or text & thank you card), and ask for 1:1 to get to know them.",
+    "Gave recently (known)": "Thank! (Phone, email, or text & thank you card)",
+    "Gave around this quarter last year": "Ask for 1:1 to make ask",
+    "Gave around this quarter last year (Multi-Year Ask)": "Ask for 1:1 to make ask for 4-year pledge",
+    "Gave in another quarter last year (Multi-Year Ask)" : "Keep in the loop",
+    "Monthly giver, no large gift this year" : "Thank for ongoing support and ask for 1:1",
+    "New to us; has not given large gift": "Introduce yourself, and ask for 1:1 to get to know them.",
+    "Prospect" : "Write to bring them in",
+    "Came to event has not given yet this year": "Thank for coming, ask for 1:1 to make ask.",
+    "Came to event; already given this year": "Thank for coming, donor organizing ask",
+    "Outstanding pledge": "Follow up to bring in pledge",
+    "Gave this year and was already thanked": "Donor organizing ask",
+    "Declined 1:1": "Email ask for what they gave last year or more.",
+    "Didn't respond to first reach out": "Bump email",
+    "Didn't respond to second reach out": "Bump email again",
+    "Didn't respond to third reach out": "Email ask for what they gave last year or more & mark to remove",
+    "No more outreach needed this quarter": "No action necessary.",
+    "Relationship building": "NEXT MOVE TBD",
+    "Lapsed Donor": "Write to re-engage them",
+    "Other (see note)": ""
+};
+
+/* =======================
+   MAIN onEdit
+======================= */
+
+function onEdit(e) {
+  if (!e || !e.range) return;
+
+  const sheet = e.range.getSheet();
+  const row = e.range.getRow();
+  if (row <= HEADER_ROW) return;
+
+  const headers = sheet.getRange(HEADER_ROW, 1, 1, sheet.getLastColumn()).getValues()[0]
+    .map(h => String(h).trim().toLowerCase());
+
+  const editedCol = e.range.getColumn() - 1;
+  const editedHeader = headers[editedCol];
+  const rowData = sheet.getRange(row, 1, 1, headers.length).getValues()[0];
+
+  const vanIdIdx = headers.indexOf("van id");
+  if (vanIdIdx === -1) return;
+  const vanId = rowData[vanIdIdx];
+  if (!vanId) return;
+
+  /* -------- NEXT MOVE -------- */
+
+  const ldaIdx = headers.indexOf("last donor action");
+  const nmIdx = headers.indexOf("next move note");
+
+  if (editedCol === ldaIdx && rowData[ldaIdx]) {
+    const mapped = LAST_DONOR_ACTION_MAP[rowData[ldaIdx]];
+    if (mapped !== undefined) {
+      sheet.getRange(row, nmIdx + 1).setValue(mapped);
+      writeNextMoveHistory(sheet, headers, rowData, vanId, mapped);
+    }
+  }
+
+  /* -------- CONTACT RESULTS + IT NOTES -------- */
+
+  const contactMatch = editedHeader.match(/\((\d+)\)$/);
+
+  if (contactMatch && (
+      editedHeader.includes("contact type") ||
+      editedHeader.includes("contact date") ||
+      editedHeader.includes("notes")
+    )) {
+    const contactNumber = Number(contactMatch[1]);
+
+    updateContactResults(headers, rowData, vanId, contactNumber);
+    updateImportedITNotes(headers, rowData, vanId);
+  }
+}
+
+/* =======================
+   NEXT MOVE HISTORY
+======================= */
+
+function writeNextMoveHistory(sheet, headers, rowData, vanId, note) {
+  const ss = SpreadsheetApp.getActive();
+  let hist = ss.getSheetByName("Next Move History");
+
+  if (!hist) {
+    hist = ss.insertSheet("Next Move History");
+    hist.appendRow([
+      "Contact Name",
+      "Van ID",
+      "Last Donor Action",
+      "Next Move Note",
+      "Last Donor Action + Next Move Note",
+      "Updated At"
+    ]);
+  }
+
+  const nameIdx = headers.indexOf("contact name");
+  const ldaValue = rowData[headers.indexOf("last donor action")] || "";
+
+  const combinedNote =
+    `Last Donor Action: ${ldaValue} | Last Move Note: ${note}`;
+
+  hist.appendRow([
+    nameIdx !== -1 ? rowData[nameIdx] : "",
+    vanId,
+    ldaValue,
+    note,
+    combinedNote,
+    new Date().toISOString()
+  ]);
+}
+
+/* =======================
+   CONTACT RESULTS
+======================= */
+
+function updateContactResults(headers, rowData, vanId, contactNumber) {
+  const ss = SpreadsheetApp.getActive();
+  let sheet = ss.getSheetByName("Contact Results");
+
+  if (!sheet) {
+    sheet = ss.insertSheet("Contact Results");
+    sheet.appendRow([
+      "Contact Name", "Van ID", "Contact #",
+      "Contact Type", "Contact Date", "Notes",
+      "Updated At", "Imported At", "Uploaded At"
+    ]);
+  }
+
+  const name = rowData[headers.indexOf("contact name")] || "";
+
+  const typeIdx = headers.indexOf(`contact type (${contactNumber})`);
+  const dateIdx = headers.indexOf(`contact date (${contactNumber})`);
+  const notesIdx = headers.indexOf(`notes (${contactNumber})`);
+
+  const values = [
+    name,
+    vanId,
+    contactNumber,
+    typeIdx !== -1 ? rowData[typeIdx] : "",
+    dateIdx !== -1 ? rowData[dateIdx] : "",
+    notesIdx !== -1 ? rowData[notesIdx] : "",
+    new Date().toISOString(), // Updated At
+    "", // Imported At (empty)
+    ""  // Uploaded At (empty)
+  ];
+
+  const data = sheet.getDataRange().getValues();
+  const existingRow = data.findIndex(
+    r => r[1] == vanId && r[2] == contactNumber
+  );
+
+  if (existingRow > 0) {
+    sheet.getRange(existingRow + 1, 1, 1, values.length).setValues([values]);
+  } else {
+    sheet.appendRow(values);
+  }
+}
+
+/* =======================
+   IT IMPORTED NOTES
+======================= */
+
+function updateImportedITNotes(headers, rowData, vanId) {
+  const ss = SpreadsheetApp.getActive();
+  let sheet = ss.getSheetByName("Imported IT Notes");
+
+  if (!sheet) {
+    sheet = ss.insertSheet("Imported IT Notes");
+    sheet.appendRow(["Van ID", "Concatenated Notes"]);
+  }
+
+  const ldaIdx = headers.indexOf("last donor action");
+  const nmIdx = headers.indexOf("next move note");
+
+  const ldaValue = ldaIdx !== -1 ? (rowData[ldaIdx] || "") : "";
+  const nextMoveValue = nmIdx !== -1 ? (rowData[nmIdx] || "") : "";
+
+  let parts = [];
+
+  for (let i = 1; i <= 7; i++) {
+    const t = rowData[headers.indexOf(`contact type (${i})`)];
+    const d = rowData[headers.indexOf(`contact date (${i})`)];
+    const n = rowData[headers.indexOf(`notes (${i})`)];
+
+    if (t || d || n) {
+      const dateStr = d ? Utilities.formatDate(new Date(d), Session.getScriptTimeZone(), "MM/dd/yy") : "";
+      const segment = `${t || ""}${t || d || n ? ": " : ""}${dateStr}${d && n ? " - " : ""}${n || ""}`.trim();
+      parts.push(segment);
+    }
+  }
+
+  const contactNotes = parts.join(" | ");
+
+  const final =
+    `Last Donor Action: ${ldaValue} | Last Move Note: ${nextMoveValue}` +
+    (contactNotes ? ` | ${contactNotes}` : "");
+
+  const data = sheet.getDataRange().getValues();
+  const rowIdx = data.findIndex(r => r[0] == vanId);
+
+  if (rowIdx > 0) {
+    sheet.getRange(rowIdx + 1, 2).setValue(final);
+  } else {
+    sheet.appendRow([vanId, final]);
+  }
+}
